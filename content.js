@@ -388,7 +388,7 @@
         const txt = await res.text();
         // Surface Cloudflare/DataDome challenge clearly
         if (res.status === 403 && /__cf_chl|cf_chl/.test(txt || '')) {
-          throw new Error('Blocked by Cloudflare/DataDome (403). Refresh the page and try again.');
+          throw new Error('Blocked by Cloudflare/DataDome (403). Logout and Login then try again');
         }
         throw new Error(`HTTP ${res.status}: ${txt}`);
       }
@@ -485,7 +485,7 @@
       let body = '';
       try { body = await res.text(); } catch (_) {}
       if (res.status === 403 && /captcha-delivery|__cf_chl|cf_chl|datadome/i.test(body || '')) {
-        throw new Error('Blocked by anti-bot (DataDome/Cloudflare). Please refresh the page, disable ad blockers, then try again.');
+        throw new Error('Blocked by anti-bot (DataDome/Cloudflare). Logout and Login then try again');
       }
       throw new Error(`Create failed: ${res.status} ${body}`);
     }
