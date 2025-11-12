@@ -418,21 +418,35 @@
   }
 
   async function downloadAsBlob(url) {
-    log(`Downloading image via fetch: ${url}`);
+    log(`Fetching image via background service worker: ${url}`);
+
+    const bgRes = await new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: 'vinted:fetchArrayBuffer', url }, response => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response);
+        });
+      } catch (e) {
+        resolve({ ok: false, error: (e && e.message) || String(e) });
+      }
+    });
+
+    if (!bgRes || !bgRes.ok || !bgRes.buffer) {
+      throw new Error(`Failed to download via background: ${url} - Status: ${bgRes && bgRes.status || 'unknown'}, Error: ${bgRes && bgRes.error || 'unknown'}`);
+    }
+
     try {
-      const res = await fetch(url, { credentials: 'omit' });
-      if (!res.ok) {
-        throw new Error(`Fetch failed with status ${res.status}`);
-      }
-      const blob = await res.blob();
+      const blob = new Blob([bgRes.buffer], { type: bgRes.contentType || 'image/jpeg' });
       if (!blob || blob.size === 0) {
-        throw new Error(`Fetch returned empty blob for ${url}`);
+        throw new Error('Received empty blob');
       }
-      log(`Fetch successful for ${url}, size: ${blob.size}`);
+      log(`Background fetch successful for ${url}, size: ${blob.size}, type: ${blob.type}`);
       return blob;
     } catch (e) {
-      log(`Fetch error for ${url}:`, e);
-      throw new Error(`Failed to download image: ${url} - ${e.message}`);
+      throw new Error(`Failed to construct blob for ${url}: ${e.message}`);
     }
   }
 

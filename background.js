@@ -101,6 +101,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     sendResponse({ csrf: latestCsrf, anonId: latestAnonId });
     return true;
+  } else if (msg && msg.type === 'vinted:fetchArrayBuffer' && msg.url) {
+    (async () => {
+      try {
+        const res = await fetch(msg.url, { method: 'GET', credentials: 'omit' });
+        if (!res.ok) {
+          sendResponse({ ok: false, status: res.status, statusText: res.statusText });
+          return;
+        }
+        const buffer = await res.arrayBuffer();
+        const contentType = res.headers.get('content-type') || '';
+        sendResponse({ ok: true, buffer, contentType });
+      } catch (e) {
+        sendResponse({ ok: false, error: (e && e.message) || String(e) });
+      }
+    })();
+    return true;
   }
   return false;
 });
