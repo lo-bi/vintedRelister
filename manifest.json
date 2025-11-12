@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vinted Relister",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Adds a 'Relist' button on Vinted member pages to clone an item.",
   "permissions": ["webRequest", "storage"],
   "background": {
@@ -42,9 +42,7 @@
     "https://www.vinted.no/*",
     "https://www.vinted.fi/*",
     "https://www.vinted.co.uk/*",
-    "https://www.vinted.com/*",
-    "https://images*.vinted.net/*",
-    "https://images*.vinted.com/*"
+    "https://www.vinted.com/*"
   ],
   "content_scripts": [
     {

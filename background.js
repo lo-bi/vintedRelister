@@ -101,23 +101,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     sendResponse({ csrf: latestCsrf, anonId: latestAnonId });
     return true;
-  } else if (msg && msg.type === 'vinted:fetchArrayBuffer' && msg.url) {
-    // Fetch binary data (e.g., image) from allowed hosts and return as ArrayBuffer
-    (async () => {
-      try {
-        const res = await fetch(msg.url, { credentials: 'omit' });
-        if (!res.ok) {
-          sendResponse({ ok: false, status: res.status, statusText: res.statusText });
-          return;
-        }
-        const buf = await res.arrayBuffer();
-        const contentType = res.headers.get('content-type') || '';
-        sendResponse({ ok: true, buffer: buf, contentType });
-      } catch (e) {
-        sendResponse({ ok: false, error: (e && e.message) || String(e) });
-      }
-    })();
-    return true; // async response
   }
   return false;
 });

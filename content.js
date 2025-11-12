@@ -34,6 +34,7 @@
       }
       .vinted-relist-notice.is-success { background: #e6f7ee; color: #0f5132; border: 1px solid #a3e4c4; }
       .vinted-relist-notice.is-error { background: #fdecea; color: #842029; border: 1px solid #f5c2c7; }
+      .vinted-relist-notice.is-warning { background: #fff3cd; color: #664d03; border: 1px solid #ffe69c; }
       .vinted-relist-toast {
         position: fixed;
         bottom: 16px;
@@ -54,15 +55,22 @@
       el.className = 'vinted-relist-notice vinted-relist-toast';
       document.body.appendChild(el);
     }
-    el.classList.remove('is-success', 'is-error');
-    el.classList.add(type === 'error' ? 'is-error' : 'is-success');
+    el.classList.remove('is-success', 'is-error', 'is-warning');
+    if (type === 'error') {
+      el.classList.add('is-error');
+    } else if (type === 'warning') {
+      el.classList.add('is-warning');
+    } else {
+      el.classList.add('is-success');
+    }
     el.setAttribute('role', 'alert');
     el.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
     el.textContent = message;
     // Auto-hide after a few seconds for non-error; keep errors visible longer
     if (type !== 'error') {
       clearTimeout(el._hideTimer);
-      el._hideTimer = setTimeout(() => { if (el && el.parentElement) el.parentElement.removeChild(el); }, 6000);
+      const timeout = type === 'warning' ? 8000 : 6000;
+      el._hideTimer = setTimeout(() => { if (el && el.parentElement) el.parentElement.removeChild(el); }, timeout);
     }
   }
 
@@ -408,32 +416,60 @@
   }
 
   async function downloadAsBlob(url) {
-    // Try without credentials first; CDN images are public but CORS may block with include
-    try {
-      const res = await fetch(url, { credentials: 'omit', mode: 'cors' });
-      if (res.ok) return res.blob();
-      // fallthrough to background fetch
-    } catch (_) {}
-    // Use background service worker to fetch as ArrayBuffer and reconstruct Blob
-    const bgRes = await new Promise(resolve => {
-      try {
-        chrome.runtime.sendMessage({ type: 'vinted:fetchArrayBuffer', url }, resolve);
-      } catch (e) {
-        resolve({ ok: false, error: e && e.message });
-      }
+    // Workaround for MV3 CORS issues: Load image via <img> tag and convert to blob using canvas
+    // Images loaded in the page context don't have CORS restrictions
+    log(`Fetching image via canvas: ${url}`);
+    
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous'; // Try with CORS first
+      
+      const timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Image load timeout: ${url}`));
+      }, 30000); // 30 second timeout
+      
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        img.onload = null;
+        img.onerror = null;
+      };
+      
+      img.onload = () => {
+        cleanup();
+        try {
+          // Create canvas and draw image
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          
+          // Convert canvas to blob
+          canvas.toBlob((blob) => {
+            if (blob && blob.size > 0) {
+              log(`Canvas conversion successful for ${url}, size: ${blob.size}`);
+              resolve(blob);
+            } else {
+              reject(new Error(`Canvas produced empty blob for ${url}`));
+            }
+          }, 'image/jpeg', 0.95); // High quality JPEG
+        } catch (e) {
+          log(`Canvas conversion error for ${url}:`, e);
+          reject(new Error(`Failed to convert image to blob: ${e.message}`));
+        }
+      };
+      
+      img.onerror = (e) => {
+        cleanup();
+        log(`Image load error for ${url}:`, e);
+        reject(new Error(`Failed to load image: ${url}`));
+      };
+      
+      // Start loading the image
+      img.src = url;
     });
-    if (!bgRes || !bgRes.ok || !bgRes.buffer) {
-      throw new Error(`Failed to download via background: ${url} ${bgRes && (bgRes.status || bgRes.error) || ''}`);
-    }
-    try {
-      const buf = bgRes.buffer;
-      // In MV3, structured cloning supports ArrayBuffer transfer
-      const contentType = bgRes.contentType || 'image/jpeg';
-      return new Blob([buf], { type: contentType });
-    } catch (e) {
-      // Fallback: force JPEG
-      return new Blob([bgRes.buffer], { type: 'image/jpeg' });
-    }
   }
 
   async function uploadPhoto(csrf, file, tempUuid) {
@@ -456,8 +492,25 @@
         ...(anonId ? { 'x-anon-id': anonId } : {}),
       },
     });
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-    return res.json();
+    if (!res.ok) {
+      let errorBody = '';
+      try { 
+        errorBody = await res.text(); 
+      } catch (_) {}
+      throw new Error(`Upload failed: ${res.status} ${res.statusText} - ${errorBody}`);
+    }
+    const result = await res.json();
+    
+    // The API returns photo data directly at root level, not nested under "photo"
+    // Check both formats for compatibility
+    const photoData = result.photo || result;
+    
+    if (!photoData || !photoData.id) {
+      throw new Error(`Upload response missing photo ID: ${JSON.stringify(result)}`);
+    }
+    
+    log(`Photo uploaded successfully - ID: ${photoData.id}`);
+    return photoData;
   }
 
   async function createItem(csrf, payload) {
@@ -534,14 +587,65 @@
   const base = await getItemDetails(itemId, csrf);
   const tempUuid = uuidv4();
       const photoUrls = pickPhotos(base);
-      const assigned = [];
-      for (const u of photoUrls) {
-        try {
-          const blob = await downloadAsBlob(u);
-          const up = await uploadPhoto(csrf, blob, tempUuid);
-          if (up && up.id) assigned.push({ id: up.id, orientation: up.orientation || 0 });
-        } catch (e) { log('photo upload failed', e); }
+      
+      if (!photoUrls || photoUrls.length === 0) {
+        throw new Error('No photos found in the original item.');
       }
+      
+      log(`Attempting to upload ${photoUrls.length} photos...`);
+      const assigned = [];
+      
+      // Upload photos sequentially with retry logic
+      for (let i = 0; i < photoUrls.length; i++) {
+        const u = photoUrls[i];
+        let uploadSuccess = false;
+        let lastError = null;
+        
+        // Try up to 3 times per photo
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            log(`Uploading photo ${i + 1}/${photoUrls.length} (attempt ${attempt}/3)...`);
+            const blob = await downloadAsBlob(u);
+            
+            if (!blob || blob.size === 0) {
+              throw new Error('Downloaded blob is empty or invalid');
+            }
+            
+            const up = await uploadPhoto(csrf, blob, tempUuid);
+            
+            if (up && up.id) {
+              assigned.push({ id: up.id, orientation: up.orientation || 0 });
+              log(`Photo ${i + 1}/${photoUrls.length} uploaded successfully (ID: ${up.id})`);
+              uploadSuccess = true;
+              break; // Success, exit retry loop
+            } else {
+              throw new Error('Upload response missing photo ID');
+            }
+          } catch (e) {
+            lastError = e;
+            log(`Photo ${i + 1} upload attempt ${attempt} failed:`, e);
+            
+            // Wait before retry (exponential backoff)
+            if (attempt < 3) {
+              const waitTime = attempt * 500; // 500ms, 1000ms
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+          }
+        }
+        
+        // If all retries failed, log the error but continue with other photos
+        if (!uploadSuccess) {
+          console.error(`Failed to upload photo ${i + 1}/${photoUrls.length} after 3 attempts:`, lastError);
+        }
+        
+        // Add a small delay between photos to avoid rate limiting
+        if (i < photoUrls.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+      
+      log(`Successfully uploaded ${assigned.length}/${photoUrls.length} photos`);
+      log(`Successfully uploaded ${assigned.length}/${photoUrls.length} photos`);
     const priceObj = base.price || {};
     const priceNum = base.price_numeric || parseFloat(priceObj.amount || '0') || 0;
     const currency = base.price_currency || priceObj.currency_code || base.currency || 'EUR';
@@ -608,7 +712,14 @@
         photos: photoUrls,
       };
   if (!assigned.length) {
-        throw new Error('No photos could be uploaded; aborting create to avoid 400.');
+        throw new Error(`No photos could be uploaded (attempted: ${photoUrls.length}). Please check console for details.`);
+      }
+      
+      if (assigned.length < photoUrls.length) {
+        log(`Warning: Only ${assigned.length}/${photoUrls.length} photos were uploaded successfully`);
+        // Show a warning but continue
+        showNotice(`Warning: Only ${assigned.length}/${photoUrls.length} photos uploaded. Continuing...`, 'warning');
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
   // Delete the original item BEFORE creating the clone, as requested
   btn.textContent = 'Deleting…';
