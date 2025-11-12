@@ -416,40 +416,61 @@
   }
 
   async function downloadAsBlob(url) {
-    // Use XMLHttpRequest to fetch images - it bypasses CORS in content scripts with host_permissions
-    log(`Fetching image via XHR: ${url}`);
+    // Inject script into page context to fetch image without CORS restrictions
+    log(`Fetching image via injected page script: ${url}`);
     
     return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', url, true);
-      xhr.responseType = 'blob';
-      xhr.timeout = 30000; // 30 second timeout
+      const messageId = `vinted-fetch-${Date.now()}-${Math.random()}`;
+      const timeoutId = setTimeout(() => {
+        window.removeEventListener('message', messageHandler);
+        reject(new Error(`Page script fetch timeout for ${url}`));
+      }, 30000);
       
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          const blob = xhr.response;
-          if (blob && blob.size > 0) {
-            log(`XHR fetch successful for ${url}, size: ${blob.size}, type: ${blob.type}`);
-            resolve(blob);
-          } else {
-            reject(new Error(`XHR returned empty blob for ${url}`));
-          }
+      const messageHandler = (event) => {
+        // Only accept messages from same origin
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.id !== messageId) return;
+        
+        clearTimeout(timeoutId);
+        window.removeEventListener('message', messageHandler);
+        
+        if (event.data.success && event.data.blob) {
+          log(`Page script fetch successful for ${url}, size: ${event.data.size}`);
+          resolve(event.data.blob);
         } else {
-          reject(new Error(`XHR failed with status ${xhr.status} for ${url}`));
+          reject(new Error(event.data.error || `Failed to fetch ${url}`));
         }
       };
       
-      xhr.onerror = () => {
-        log(`XHR error for ${url}`);
-        reject(new Error(`XHR network error for ${url}`));
-      };
+      window.addEventListener('message', messageHandler);
       
-      xhr.ontimeout = () => {
-        log(`XHR timeout for ${url}`);
-        reject(new Error(`XHR timeout for ${url}`));
-      };
-      
-      xhr.send();
+      // Inject script to fetch in page context
+      const script = document.createElement('script');
+      script.textContent = `
+        (async function() {
+          const messageId = ${JSON.stringify(messageId)};
+          const url = ${JSON.stringify(url)};
+          try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Fetch failed: ' + response.status);
+            const blob = await response.blob();
+            window.postMessage({
+              id: messageId,
+              success: true,
+              blob: blob,
+              size: blob.size
+            }, '*');
+          } catch (e) {
+            window.postMessage({
+              id: messageId,
+              success: false,
+              error: e.message
+            }, '*');
+          }
+        })();
+      `;
+      document.documentElement.appendChild(script);
+      script.remove();
     });
   }
 
