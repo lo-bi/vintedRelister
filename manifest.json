@@ -42,7 +42,8 @@
     "https://www.vinted.no/*",
     "https://www.vinted.fi/*",
     "https://www.vinted.co.uk/*",
-    "https://www.vinted.com/*"
+    "https://www.vinted.com/*",
+    "https://images*.vinted.net/*"
   ],
   "content_scripts": [
     {

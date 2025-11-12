@@ -416,68 +416,40 @@
   }
 
   async function downloadAsBlob(url) {
-    // Workaround for MV3 CORS issues: Load image via <img> tag and convert to blob using canvas
-    // Don't use crossOrigin to avoid CORS checks - images load fine without it
-    log(`Fetching image via canvas: ${url}`);
+    // Use XMLHttpRequest to fetch images - it bypasses CORS in content scripts with host_permissions
+    log(`Fetching image via XHR: ${url}`);
     
     return new Promise((resolve, reject) => {
-      const img = new Image();
-      // Don't set crossOrigin - it triggers CORS checks that fail for Vinted CDN
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'blob';
+      xhr.timeout = 30000; // 30 second timeout
       
-      const timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Image load timeout: ${url}`));
-      }, 30000); // 30 second timeout
-      
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        img.onload = null;
-        img.onerror = null;
-      };
-      
-      img.onload = () => {
-        cleanup();
-        try {
-          // Create canvas and draw image
-          const canvas = document.createElement('canvas');
-          canvas.width = img.naturalWidth || img.width;
-          canvas.height = img.naturalHeight || img.height;
-          
-          const ctx = canvas.getContext('2d');
-          
-          // Try to draw - this might fail if image is cross-origin
-          try {
-            ctx.drawImage(img, 0, 0);
-          } catch (drawError) {
-            log(`Canvas draw error (CORS tainted), trying alternative method:`, drawError);
-            // If we can't draw due to CORS, we need to fetch differently
-            reject(new Error(`Canvas tainted by cross-origin data: ${url}`));
-            return;
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const blob = xhr.response;
+          if (blob && blob.size > 0) {
+            log(`XHR fetch successful for ${url}, size: ${blob.size}, type: ${blob.type}`);
+            resolve(blob);
+          } else {
+            reject(new Error(`XHR returned empty blob for ${url}`));
           }
-          
-          // Convert canvas to blob
-          canvas.toBlob((blob) => {
-            if (blob && blob.size > 0) {
-              log(`Canvas conversion successful for ${url}, size: ${blob.size}`);
-              resolve(blob);
-            } else {
-              reject(new Error(`Canvas produced empty blob for ${url}`));
-            }
-          }, 'image/jpeg', 0.95); // High quality JPEG
-        } catch (e) {
-          log(`Canvas conversion error for ${url}:`, e);
-          reject(new Error(`Failed to convert image to blob: ${e.message}`));
+        } else {
+          reject(new Error(`XHR failed with status ${xhr.status} for ${url}`));
         }
       };
       
-      img.onerror = (e) => {
-        cleanup();
-        log(`Image load error for ${url}:`, e);
-        reject(new Error(`Failed to load image: ${url}`));
+      xhr.onerror = () => {
+        log(`XHR error for ${url}`);
+        reject(new Error(`XHR network error for ${url}`));
       };
       
-      // Start loading the image
-      img.src = url;
+      xhr.ontimeout = () => {
+        log(`XHR timeout for ${url}`);
+        reject(new Error(`XHR timeout for ${url}`));
+      };
+      
+      xhr.send();
     });
   }
 
