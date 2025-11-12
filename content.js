@@ -7,6 +7,8 @@
 
   function log(...args) { console.debug('[Vinted Cloner]', ...args); }
 
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
   // Cache created-at labels per item id to avoid repeated fetch/inserts
   const createdAtCache = new Map();
   // Cache of full wardrobe items returned via our own fetch
@@ -416,62 +418,22 @@
   }
 
   async function downloadAsBlob(url) {
-    // Inject script into page context to fetch image without CORS restrictions
-    log(`Fetching image via injected page script: ${url}`);
-    
-    return new Promise((resolve, reject) => {
-      const messageId = `vinted-fetch-${Date.now()}-${Math.random()}`;
-      const timeoutId = setTimeout(() => {
-        window.removeEventListener('message', messageHandler);
-        reject(new Error(`Page script fetch timeout for ${url}`));
-      }, 30000);
-      
-      const messageHandler = (event) => {
-        // Only accept messages from same origin
-        if (event.origin !== window.location.origin) return;
-        if (!event.data || event.data.id !== messageId) return;
-        
-        clearTimeout(timeoutId);
-        window.removeEventListener('message', messageHandler);
-        
-        if (event.data.success && event.data.blob) {
-          log(`Page script fetch successful for ${url}, size: ${event.data.size}`);
-          resolve(event.data.blob);
-        } else {
-          reject(new Error(event.data.error || `Failed to fetch ${url}`));
-        }
-      };
-      
-      window.addEventListener('message', messageHandler);
-      
-      // Inject script to fetch in page context
-      const script = document.createElement('script');
-      script.textContent = `
-        (async function() {
-          const messageId = ${JSON.stringify(messageId)};
-          const url = ${JSON.stringify(url)};
-          try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Fetch failed: ' + response.status);
-            const blob = await response.blob();
-            window.postMessage({
-              id: messageId,
-              success: true,
-              blob: blob,
-              size: blob.size
-            }, '*');
-          } catch (e) {
-            window.postMessage({
-              id: messageId,
-              success: false,
-              error: e.message
-            }, '*');
-          }
-        })();
-      `;
-      document.documentElement.appendChild(script);
-      script.remove();
-    });
+    log(`Downloading image via fetch: ${url}`);
+    try {
+      const res = await fetch(url, { credentials: 'omit' });
+      if (!res.ok) {
+        throw new Error(`Fetch failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      if (!blob || blob.size === 0) {
+        throw new Error(`Fetch returned empty blob for ${url}`);
+      }
+      log(`Fetch successful for ${url}, size: ${blob.size}`);
+      return blob;
+    } catch (e) {
+      log(`Fetch error for ${url}:`, e);
+      throw new Error(`Failed to download image: ${url} - ${e.message}`);
+    }
   }
 
   async function uploadPhoto(csrf, file, tempUuid) {
@@ -521,7 +483,7 @@
       const bg = await getTokensFromBg();
       anonId = (bg && bg.anonId) || null;
     }
-  const res = await fetch(`${ORIGIN}/api/v2/item_upload/items`, {
+    const res = await fetch(`${ORIGIN}/api/v2/item_upload/items`, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -553,7 +515,7 @@
       const bg = await getTokensFromBg();
       anonId = (bg && bg.anonId) || null;
     }
-  const res = await fetch(`${ORIGIN}/api/v2/items/${itemId}/delete`, {
+    const res = await fetch(`${ORIGIN}/api/v2/items/${itemId}/delete`, {
       method: 'POST',
       credentials: 'include',
       headers: {
@@ -580,14 +542,19 @@
   async function republishFromButton(btn) {
     const itemId = findClosestItemId(btn);
     if (!itemId) {
-  showNotice('Could not determine item id', 'error');
+      showNotice('Could not determine item id', 'error');
       return;
     }
+    let originalDeleted = false;
+    let deletedSummary = null;
     try {
-  btn.disabled = true; btn.classList.add('is-loading'); btn.textContent = 'Relisting…';
-  const csrf = await getCsrf();
-  const base = await getItemDetails(itemId, csrf);
-  const tempUuid = uuidv4();
+      btn.disabled = true;
+      btn.classList.add('is-loading');
+      btn.textContent = 'Relisting…';
+
+      const csrf = await getCsrf();
+      const base = await getItemDetails(itemId, csrf);
+      const tempUuid = uuidv4();
       const photoUrls = pickPhotos(base);
       
       if (!photoUrls || photoUrls.length === 0) {
@@ -630,7 +597,7 @@
             // Wait before retry (exponential backoff)
             if (attempt < 3) {
               const waitTime = attempt * 500; // 500ms, 1000ms
-              await new Promise(resolve => setTimeout(resolve, waitTime));
+              await sleep(waitTime);
             }
           }
         }
@@ -642,18 +609,18 @@
         
         // Add a small delay between photos to avoid rate limiting
         if (i < photoUrls.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300));
+          await sleep(300);
         }
       }
       
-      log(`Successfully uploaded ${assigned.length}/${photoUrls.length} photos`);
-      log(`Successfully uploaded ${assigned.length}/${photoUrls.length} photos`);
+    log(`Successfully uploaded ${assigned.length}/${photoUrls.length} photos`);
+
     const priceObj = base.price || {};
     const priceNum = base.price_numeric || parseFloat(priceObj.amount || '0') || 0;
     const currency = base.price_currency || priceObj.currency_code || base.currency || 'EUR';
-  const colorIds = base.color_ids || [base.color1_id, base.color2_id].filter(Boolean);
-  const brandTitleRaw = base.brand_title || base.brand || (base.brand_dto && base.brand_dto.title) || null;
-  const brandTitle = (brandTitleRaw && String(brandTitleRaw).trim()) ? brandTitleRaw : null;
+    const colorIds = base.color_ids || [base.color1_id, base.color2_id].filter(Boolean);
+    const brandTitleRaw = base.brand_title || base.brand || (base.brand_dto && base.brand_dto.title) || null;
+    const brandTitle = (brandTitleRaw && String(brandTitleRaw).trim()) ? brandTitleRaw : null;
       const payload = {
         item: {
           id: null,
@@ -684,7 +651,7 @@
       // measurements if present
       measurement_length: base.measurement_length != null ? base.measurement_length : null,
       measurement_width: base.measurement_width != null ? base.measurement_width : null,
-    measurement_unit: base.measurement_unit != null ? base.measurement_unit : null,
+      measurement_unit: base.measurement_unit != null ? base.measurement_unit : null,
         },
         feedback_id: null,
         push_up: false,
@@ -692,7 +659,7 @@
         upload_session_id: tempUuid,
       };
       // Build a summary of the original (to show if create fails after deletion)
-      const deletedSummary = {
+      deletedSummary = {
         id: base.id || itemId,
         title: base.title || '',
         description: base.description || '',
@@ -713,7 +680,7 @@
         measurement_unit: base.measurement_unit != null ? base.measurement_unit : null,
         photos: photoUrls,
       };
-  if (!assigned.length) {
+      if (!assigned.length) {
         throw new Error(`No photos could be uploaded (attempted: ${photoUrls.length}). Please check console for details.`);
       }
       
@@ -721,37 +688,39 @@
         log(`Warning: Only ${assigned.length}/${photoUrls.length} photos were uploaded successfully`);
         // Show a warning but continue
         showNotice(`Warning: Only ${assigned.length}/${photoUrls.length} photos uploaded. Continuing...`, 'warning');
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await sleep(1500);
       }
-  // Delete the original item BEFORE creating the clone, as requested
-  btn.textContent = 'Deleting…';
-  let originalDeleted = false;
-  await deleteItem(csrf, itemId);
-  originalDeleted = true;
-  btn.textContent = 'Creating…';
-  const created = await createItem(csrf, payload);
-  const newId = (created && created.item && created.item.id) ? created.item.id : 'unknown';
-  showNotice(`Item relisted successfully. Refreshing the page...`, 'success');
-  setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 1200);
+      // Delete the original item BEFORE creating the clone, as requested
+      btn.textContent = 'Deleting…';
+      await deleteItem(csrf, itemId);
+      originalDeleted = true;
+
+      btn.textContent = 'Creating…';
+      const created = await createItem(csrf, payload);
+      const newId = (created && created.item && created.item.id) ? created.item.id : 'unknown';
+      log(`Item relisted successfully with new ID ${newId}`);
+      showNotice('Item relisted successfully. Refreshing the page...', 'success');
+      setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 1200);
     } catch (e) {
       console.error(e);
       // If we already deleted the original, surface its data to the user
       try {
-        // Access variables if defined in this scope
-        if (typeof originalDeleted !== 'undefined' && originalDeleted === true && typeof deletedSummary !== 'undefined') {
+        if (originalDeleted && deletedSummary) {
           const text = JSON.stringify(deletedSummary, null, 2);
           // Attempt to copy to clipboard for convenience
           try { await navigator.clipboard.writeText(text); } catch (_) {}
-    showNotice('Failed to relist after deletion. Original item data was copied to clipboard if permitted. Details in console.', 'error');
-    console.error('Deleted original item data:', deletedSummary);
+          showNotice('Failed to relist after deletion. Original item data was copied to clipboard if permitted. Details in console.', 'error');
+          console.error('Deleted original item data:', deletedSummary);
         } else {
-    showNotice('Failed to relist: ' + (e && e.message ? e.message : e), 'error');
+          showNotice('Failed to relist: ' + (e && e.message ? e.message : e), 'error');
         }
       } catch (_) {
-  showNotice('Failed to relist: ' + (e && e.message ? e.message : e), 'error');
+        showNotice('Failed to relist: ' + (e && e.message ? e.message : e), 'error');
       }
     } finally {
-  btn.disabled = false; btn.classList.remove('is-loading'); btn.textContent = 'Relist';
+      btn.disabled = false;
+      btn.classList.remove('is-loading');
+      btn.textContent = 'Relist';
     }
   }
 

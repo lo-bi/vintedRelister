@@ -3,9 +3,23 @@
   "name": "Vinted Relister",
   "version": "0.1.1",
   "description": "Adds a 'Relist' button on Vinted member pages to clone an item.",
-  "permissions": ["webRequest", "storage"],
+  "permissions": [
+    "webRequest",
+    "storage",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
+  ],
   "background": {
     "service_worker": "background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "cors_rules",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
   },
   "icons": {
     "16": "icons/icon16.png",
