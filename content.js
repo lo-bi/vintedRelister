@@ -417,12 +417,12 @@
 
   async function downloadAsBlob(url) {
     // Workaround for MV3 CORS issues: Load image via <img> tag and convert to blob using canvas
-    // Images loaded in the page context don't have CORS restrictions
+    // Don't use crossOrigin to avoid CORS checks - images load fine without it
     log(`Fetching image via canvas: ${url}`);
     
     return new Promise((resolve, reject) => {
       const img = new Image();
-      img.crossOrigin = 'anonymous'; // Try with CORS first
+      // Don't set crossOrigin - it triggers CORS checks that fail for Vinted CDN
       
       const timeoutId = setTimeout(() => {
         cleanup();
@@ -444,7 +444,16 @@
           canvas.height = img.naturalHeight || img.height;
           
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
+          
+          // Try to draw - this might fail if image is cross-origin
+          try {
+            ctx.drawImage(img, 0, 0);
+          } catch (drawError) {
+            log(`Canvas draw error (CORS tainted), trying alternative method:`, drawError);
+            // If we can't draw due to CORS, we need to fetch differently
+            reject(new Error(`Canvas tainted by cross-origin data: ${url}`));
+            return;
+          }
           
           // Convert canvas to blob
           canvas.toBlob((blob) => {
